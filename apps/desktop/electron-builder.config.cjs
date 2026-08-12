@@ -25,28 +25,9 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
+const { light, name, appId, channel, protocolScheme } = require('./product-identity.cjs')
+
 /** @typedef {import("app-builder-lib").Configuration} Configuration */
-
-const light = process.env.HERMES_DESKTOP_VARIANT === 'light'
-
-// master product id, used for all sorts of markers
-const variant = light ? ['Hermes', 'Light'] : ['Hermes']
-// variant in various cases
-const name = {
-  display: variant.join(' '),
-  kebab: variant.join('-').toLowerCase(),
-  train: variant.join('-'),
-  pascal: variant.join('')
-}
-
-// distinct for the OS (settings, installs, etc)
-const appId = `com.nousresearch.${name.kebab}`
-
-// distinct for release channels
-const channel = light ? 'light' : 'latest'
-
-// distinct for deep link schemes
-const protocolScheme = name.kebab
 
 /** @type {Configuration} */
 module.exports = {
