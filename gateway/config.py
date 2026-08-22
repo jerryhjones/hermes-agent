@@ -2534,7 +2534,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.BLUEBUBBLES].extra.update({
             "server_url": bluebubbles_server_url.rstrip("/"),
             "password": bluebubbles_password,
-            "webhook_host": getenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
+            "webhook_host": getenv("BLUEBUBBLES_WEBHOOK_HOST", "localhost"),
             "webhook_port": getenv_int("BLUEBUBBLES_WEBHOOK_PORT", 8645),
             "webhook_path": getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
             "send_read_receipts": is_truthy_value(getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true")),

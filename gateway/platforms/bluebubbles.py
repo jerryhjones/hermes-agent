@@ -86,7 +86,18 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_WEBHOOK_HOST = "127.0.0.1"
+# "localhost" (not "127.0.0.1") so the listener binds BOTH loopback families.
+# asyncio create_server() with a name resolving to several addresses opens one
+# socket per family, giving 127.0.0.1 AND ::1 -- still loopback-only, so the
+# password-bearing webhook URL is never exposed off-host. The URL registered
+# with BlueBubbles is the name "localhost"; on macOS that resolves to both
+# families and RFC 6724 sorts ::1 first, and BlueBubbles (Electron/Node 18,
+# autoSelectFamily off) does not fall back to IPv4 -- so against a 127.0.0.1
+# listener every dispatch failed with "connect ECONNREFUSED ::1:8645" and no
+# message reached the agent. Do NOT use None/"0.0.0.0"/"::" here: None and
+# "0.0.0.0" bind wildcard (all interfaces, exposing the password query
+# param), and "::" yields an IPv6-ONLY socket where IPV6_V6ONLY=1.
+DEFAULT_WEBHOOK_HOST = "localhost"
 # BlueBubbles webhook events are small JSON/form payloads; attachments come
 # through the REST API, not the webhook. 1 MiB is generous headroom while
 # keeping oversized/chunked bodies from being buffered unbounded.

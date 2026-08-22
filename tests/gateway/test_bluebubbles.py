@@ -4,7 +4,10 @@ import json
 
 import pytest
 
+import socket
+
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.bluebubbles import DEFAULT_WEBHOOK_HOST
 
 
 def _make_adapter(monkeypatch, **extra):
@@ -284,7 +287,9 @@ class TestBlueBubblesWebhookUrl:
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
+        # Default webhook_host is "localhost", which passes through the
+        # normalisation set unchanged.
+        assert adapter.webhook_host == DEFAULT_WEBHOOK_HOST
         assert "localhost" in adapter._webhook_url
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
@@ -300,6 +305,79 @@ class TestBlueBubblesWebhookUrl:
         )
         adapter = BlueBubblesAdapter(cfg)
         assert adapter._webhook_register_url == adapter._webhook_url
+
+
+class TestBlueBubblesWebhookBind:
+    """The listener must be reachable at whatever address gets registered.
+
+    BlueBubbles Server posts events to the URL the adapter registers with it.
+    That URL is the NAME "localhost" (see _webhook_url). On macOS "localhost"
+    resolves to both ::1 and 127.0.0.1, RFC 6724 sorts ::1 first, and
+    BlueBubbles is an Electron/Node 18 app where autoSelectFamily is off, so it
+    dials ::1 and does not fall back. A listener bound only to 127.0.0.1 is
+    therefore unreachable and every dispatch fails with
+    "connect ECONNREFUSED ::1:8645" -- silently, because the gateway never
+    receives the event and so logs nothing. See #8512.
+    """
+
+    @staticmethod
+    def _bound_sockaddrs(host):
+        """Bind host on an ephemeral port the way web.TCPSite does and report
+        the addresses actually served. TCPSite delegates to create_server()."""
+        async def _run():
+            server = await asyncio.start_server(lambda r, w: None, host, 0)
+            try:
+                return [s.getsockname()[0] for s in server.sockets]
+            finally:
+                server.close()
+                await server.wait_closed()
+
+        return asyncio.run(_run())
+
+    def test_default_host_serves_both_loopback_families(self):
+        """The default must answer on IPv4 AND IPv6 loopback.
+
+        This is the regression guard: "127.0.0.1" passes every URL-shape
+        assertion in this file while still failing in production, because the
+        bug is in which socket exists, not in which string is advertised.
+        """
+        addrs = set(self._bound_sockaddrs(DEFAULT_WEBHOOK_HOST))
+        assert "127.0.0.1" in addrs, f"IPv4 loopback not served: {addrs}"
+        if socket.has_ipv6:
+            assert "::1" in addrs, f"IPv6 loopback not served: {addrs}"
+
+    def test_default_host_is_loopback_only(self):
+        """The registered URL carries the BlueBubbles password as a query
+        parameter (their webhook API cannot send custom headers), so this
+        listener must never be reachable off-host. Guards against "fixing"
+        the family problem with None/"0.0.0.0"/"::", which all bind wildcard.
+        """
+        for addr in self._bound_sockaddrs(DEFAULT_WEBHOOK_HOST):
+            assert socket.inet_pton(
+                socket.AF_INET6 if ":" in addr else socket.AF_INET, addr
+            ), addr
+            assert addr in {"127.0.0.1", "::1"}, (
+                f"default bound non-loopback address {addr!r}; the webhook URL "
+                "carries a password and must not be exposed off-host"
+            )
+
+    def test_advertised_host_is_a_bound_address(self, monkeypatch):
+        """The bind and the advertisement must agree -- the actual contract."""
+        adapter = _make_adapter(monkeypatch)
+        advertised = adapter._webhook_url.split("//", 1)[1].split(":", 1)[0]
+        resolved = {
+            ai[4][0]
+            for ai in socket.getaddrinfo(advertised, None, type=socket.SOCK_STREAM)
+        }
+        bound = set(self._bound_sockaddrs(adapter.webhook_host))
+        # Overlap is not enough: the peer picks ONE address, and on macOS
+        # RFC 6724 makes it pick ::1 first. Every address the name resolves to
+        # must be served, or that choice is a silent ECONNREFUSED.
+        assert resolved <= bound, (
+            f"advertised {advertised!r} resolves to {sorted(resolved)} but the "
+            f"listener only binds {sorted(bound)}; a peer resolving to "
+            f"{sorted(resolved - bound)} gets ECONNREFUSED"
+        )
 
 
 class TestBlueBubblesWebhookRegistration:
