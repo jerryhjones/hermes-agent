@@ -62,6 +62,9 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
     "/ds-assets/",
     "/fonts/",
     "/fonts-terminal/",
+    # The observer source authenticates its own distinct bearer at the route
+    # boundary; do not force a human dashboard cookie on this service path.
+    "/observer/v1",
 )
 
 
