@@ -1,4 +1,5 @@
 import json
+import sys
 
 import pytest
 
@@ -82,3 +83,12 @@ def test_observer_router_uses_distinct_bearer(monkeypatch):
     me = next(route.endpoint for route in router.routes if route.path == "/observer/v1/me")
     with pytest.raises(Exception):
         me(authorization="Bearer controller-secret")
+
+
+def test_observer_router_import_does_not_initialize_controller_dispatcher():
+    # The source router must be importable in an observer-only process without
+    # loading the controller method registry as an import-time side effect.
+    sys.modules.pop("tui_gateway.server", None)
+    import tui_gateway.observer_router  # noqa: F401
+
+    assert "tui_gateway.server" not in sys.modules

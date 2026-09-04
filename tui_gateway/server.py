@@ -50,7 +50,7 @@ from tui_gateway.transport import (
     current_transport,
     reset_transport,
 )
-from tui_gateway.observer import ObserverPlane
+from tui_gateway.observer import observer_plane
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +222,8 @@ def _now_iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
 
 
-observer_plane = ObserverPlane(_observer_sessions, _observer_transcript)
+observer_plane._session_reader = _observer_sessions
+observer_plane._transcript_reader = _observer_transcript
 try:
     _slash_timeout = float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S") or "45")
 except (ValueError, TypeError):

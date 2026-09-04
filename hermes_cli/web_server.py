@@ -332,7 +332,7 @@ app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 # Hermes-side observer source.  This is deliberately a separate route family
 # and bearer audience from /api/ws; it exposes only normalized read events.
 from tui_gateway.observer_router import create_observer_router  # noqa: E402
-from tui_gateway.server import observer_plane  # noqa: E402
+from tui_gateway.observer import observer_plane  # noqa: E402
 
 app.include_router(create_observer_router(observer_plane))
 

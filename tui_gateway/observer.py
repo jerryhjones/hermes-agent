@@ -314,4 +314,9 @@ class ObserverPlane:
                 self._observers.pop(logical_id, None)
 
 
-__all__ = ["ObserverPlane", "ObserverJournal", "ObserverRecord", "logical_session_id", "SCHEMA_SESSIONS", "SCHEMA_SNAPSHOT", "SCHEMA_EVENT"]
+# Shared observer state is defined in this controller-independent module so
+# importing the observer router never initializes the controller dispatcher.
+observer_plane = ObserverPlane()
+
+
+__all__ = ["ObserverPlane", "ObserverJournal", "ObserverRecord", "logical_session_id", "SCHEMA_SESSIONS", "SCHEMA_SNAPSHOT", "SCHEMA_EVENT", "observer_plane"]
