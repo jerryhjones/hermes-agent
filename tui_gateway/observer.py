@@ -28,6 +28,7 @@ MAX_EVENTS = 10_000
 MAX_AGE_SECONDS = 15 * 60
 MAX_TEXT = 4_000
 MAX_JOURNALS = 128
+MAX_SUBSCRIBERS_PER_SESSION = 8
 
 _ALLOWED_KINDS = frozenset({
     "transcript.row.upsert", "message.start", "message.delta", "message.complete",
@@ -184,8 +185,15 @@ class ObserverPlane:
     def rotate_stream(self, logical_id: str) -> ObserverJournal:
         """Start a new epoch after restart, destructive rewind, or lineage change."""
         with self._lock:
+            old_observers = self._observers.pop(logical_id, [])
             journal = ObserverJournal()
             self._journals[logical_id] = journal
+            gap = ObserverRecord(logical_id, journal.stream_id, 1, f"{journal.stream_id}:1", _now(), "control", "gap", "display", {"reason": "stream_restarted", "rehydrate_required": True})
+            for target in old_observers:
+                try:
+                    target.put_nowait(gap)
+                except Exception:
+                    pass
             return journal
 
     def list_sessions(self, limit: int = 20) -> dict:
@@ -259,6 +267,8 @@ class ObserverPlane:
         # Serialize append, observer registration, and epoch rotation. This
         # makes journal-before-fanout and replay-to-live a single boundary.
         with self._lock:
+            if event == "lineage.changed" and logical in self._journals:
+                self.rotate_stream(logical)
             journal = self._journal(logical)
             with journal._lock:
                 record = journal.append(lambda stream, seq: ObserverRecord(logical, stream, seq, f"{stream}:{seq}", _now(), event_class, kind, visibility, projected))
@@ -290,6 +300,8 @@ class ObserverPlane:
                     gap = "stream_restarted"
                     replay = []
                 if gap is None:
+                    if len(self._observers.get(logical_id, ())) >= MAX_SUBSCRIBERS_PER_SESSION:
+                        return q, [], "source_unavailable"
                     self._observers.setdefault(logical_id, []).append(q)
         return q, replay, gap
 

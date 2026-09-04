@@ -66,6 +66,8 @@ def create_observer_router(plane: ObserverPlane):
                     return
                 for record in replay:
                     yield "event: observed\ndata: " + json.dumps(record.as_dict(), ensure_ascii=False) + "\n\n"
+                    if record.kind == "gap":
+                        return
                 while True:
                     try:
                         record = q.get(timeout=30)
@@ -73,6 +75,8 @@ def create_observer_router(plane: ObserverPlane):
                         yield ": keepalive\n\n"
                         continue
                     yield "event: observed\ndata: " + json.dumps(record.as_dict(), ensure_ascii=False) + "\n\n"
+                    if record.kind == "gap":
+                        return
             finally:
                 plane.unsubscribe(logical_session_id, q)
 

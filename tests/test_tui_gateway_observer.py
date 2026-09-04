@@ -62,6 +62,16 @@ def test_stream_epoch_mismatch_is_explicit_gap():
     assert plane.rotate_stream(lid).stream_id != "st_old"
 
 
+def test_lineage_change_rotates_epoch_and_notifies_existing_observer():
+    plane, lid = _plane(), logical_session_id("runtime-1")
+    q, _, _ = plane.subscribe(lid)
+    first = plane.capture("status.current", "runtime-1", {"text": "working", "kind": "working"})
+    changed = plane.capture("lineage.changed", "runtime-1", {"lineage_generation": 2, "reason": "compression"})
+    assert first.stream_id != changed.stream_id
+    assert q.get_nowait().kind == "status.current"
+    assert q.get_nowait().kind == "gap"
+
+
 def test_observer_router_uses_distinct_bearer(monkeypatch):
     monkeypatch.setenv("HERMES_OBSERVER_SOURCE_TOKEN", "observer-secret")
     from tui_gateway.observer_router import create_observer_router, observer_token_is_valid
