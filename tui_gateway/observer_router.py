@@ -63,6 +63,7 @@ def create_observer_router(plane: ObserverPlane):
             try:
                 if gap:
                     yield "event: observed\ndata: " + json.dumps({"schema": "iris.observe.event.v1", "kind": "gap", "payload": {"reason": gap, "rehydrate_required": True}}) + "\n\n"
+                    return
                 for record in replay:
                     yield "event: observed\ndata: " + json.dumps(record.as_dict(), ensure_ascii=False) + "\n\n"
                 while True:

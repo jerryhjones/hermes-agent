@@ -27,6 +27,7 @@ SCHEMA_EVENT = "iris.observe.event.v1"
 MAX_EVENTS = 10_000
 MAX_AGE_SECONDS = 15 * 60
 MAX_TEXT = 4_000
+MAX_JOURNALS = 128
 
 _ALLOWED_KINDS = frozenset({
     "transcript.row.upsert", "message.start", "message.delta", "message.complete",
@@ -136,7 +137,13 @@ class ObserverJournal:
     @property
     def floor(self) -> int:
         with self._lock:
+            self._prune_locked()
             return self._records[0][1].seq if self._records else self._seq + 1
+
+    def _prune_locked(self) -> None:
+        cutoff = time.monotonic() - self._max_age
+        while self._records and self._records[0][0] < cutoff:
+            self._records.popleft()
 
     def append(self, record_factory: Callable[[str, int], ObserverRecord]) -> ObserverRecord:
         with self._lock:
@@ -144,13 +151,14 @@ class ObserverJournal:
             record = record_factory(self.stream_id, self._seq)
             now = time.monotonic()
             self._records.append((now, record))
-            cutoff = now - self._max_age
-            while len(self._records) > self._max_events or (self._records and self._records[0][0] < cutoff):
+            self._prune_locked()
+            while len(self._records) > self._max_events:
                 self._records.popleft()
             return record
 
     def replay(self, after_seq: int) -> tuple[list[ObserverRecord], str | None]:
         with self._lock:
+            self._prune_locked()
             if after_seq < self.floor - 1:
                 return [], "retention_exceeded"
             return [r for _, r in self._records if r.seq > after_seq], None
@@ -169,6 +177,8 @@ class ObserverPlane:
 
     def _journal(self, logical_id: str) -> ObserverJournal:
         with self._lock:
+            if logical_id not in self._journals and len(self._journals) >= MAX_JOURNALS:
+                self._journals.pop(next(iter(self._journals)))
             return self._journals.setdefault(logical_id, ObserverJournal())
 
     def rotate_stream(self, logical_id: str) -> ObserverJournal:
@@ -223,8 +233,12 @@ class ObserverPlane:
             projected = _safe_payload("transcript.row.upsert", raw)
             if projected.get("role") in {"user", "assistant"} and projected.get("text") is not None:
                 rows.append(projected)
+        try:
+            generation = max(1, int(source.get("lineage_generation") or 1))
+        except (TypeError, ValueError):
+            generation = 1
         return {"schema": SCHEMA_SNAPSHOT, "logical_session_id": logical_id,
-                "lineage_generation": int(source.get("lineage_generation") or 1),
+                "lineage_generation": generation,
                 "session": _safe_payload("session.metadata", source),
                 "transcript": rows, "stream": {"stream_id": journal.stream_id,
                 "through_seq": through, "retention_floor_seq": journal.floor,
@@ -242,31 +256,41 @@ class ObserverPlane:
         projected = _safe_payload(kind, payload)
         visibility = "display" if known and not hidden else "hidden"
         event_class = "control" if kind in {"cursor.advance", "unknown_activity", "gap", "lineage.changed"} else ("activity" if kind in {"tool.phase", "status.current"} else "transcript")
-        journal = self._journal(logical)
-        record = journal.append(lambda stream, seq: ObserverRecord(logical, stream, seq, f"{stream}:{seq}", _now(), event_class, kind, visibility, projected))
+        # Serialize append, observer registration, and epoch rotation. This
+        # makes journal-before-fanout and replay-to-live a single boundary.
         with self._lock:
-            targets = list(self._observers.get(logical, ()))
-        for target in targets:
-            try:
-                target.put_nowait(record)
-            except Exception:
-                # Slow observers are isolated and may miss replay; controller is unaffected.
-                pass
+            journal = self._journal(logical)
+            with journal._lock:
+                record = journal.append(lambda stream, seq: ObserverRecord(logical, stream, seq, f"{stream}:{seq}", _now(), event_class, kind, visibility, projected))
+                targets = list(self._observers.get(logical, ()))
+                for target in targets:
+                    try:
+                        target.put_nowait(record)
+                    except Exception:
+                        # Slow observers are isolated and may miss replay; controller is unaffected.
+                        pass
         return record
 
     def subscribe(self, logical_id: str, after_seq: int = 0, max_queue: int = 256, stream_id: str | None = None) -> tuple[queue.Queue, list[ObserverRecord], str | None]:
-        journal = self._journal(logical_id)
         q: queue.Queue = queue.Queue(maxsize=max(1, int(max_queue)))
         # Hold the journal lock through replay registration.  Capture appends
         # under the same lock, so an event cannot land between the replay head
         # and observer registration (the hydrate/subscribe race).
-        with journal._lock:
-            replay, gap = journal.replay(int(after_seq))
-            if stream_id and stream_id != journal.stream_id:
-                gap = "stream_restarted"
-                replay = []
-            if gap is None:
-                self._observers.setdefault(logical_id, []).append(q)
+        with self._lock:
+            journal = self._journals.get(logical_id)
+            if journal is None:
+                known = any(logical_session_id(str(row.get("id") or row.get("session_id") or "")) == logical_id
+                            for row in self._session_reader() if isinstance(row, dict))
+                if not known:
+                    return q, [], "source_unavailable"
+                journal = self._journal(logical_id)
+            with journal._lock:
+                replay, gap = journal.replay(int(after_seq))
+                if stream_id and stream_id != journal.stream_id:
+                    gap = "stream_restarted"
+                    replay = []
+                if gap is None:
+                    self._observers.setdefault(logical_id, []).append(q)
         return q, replay, gap
 
     def unsubscribe(self, logical_id: str, q: queue.Queue) -> None:
